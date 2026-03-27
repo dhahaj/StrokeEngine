@@ -634,6 +634,275 @@ class Insist : public Pattern {
 };
 
 /**************************************************************************/
+/*!
+  @brief  Fast vibration pattern. Creates rapid short-stroke oscillations
+  centered at the depth position. Uses maximum speed and acceleration for
+  the fastest possible back-and-forth motion.
+
+  Sensation controls vibration amplitude:
+    0     = full stroke length (same as Simple Stroke)
+    ±100  = minimum ~2mm vibration
+  Positive sensation centers vibration at the front (depth end),
+  negative sensation centers it at the back (retracted end).
+
+  Speed (FPM) still controls the overall cycle rate, but because the
+  stroke is short the motor will hit max speed/accel and go as fast as
+  it physically can.
+*/
+/**************************************************************************/
+class Vibrate : public Pattern {
+    public:
+        Vibrate(const char *str) : Pattern(str) {}
+
+        void setSensation(float sensation) {
+            _sensation = sensation;
+            _updateVibration();
+        }
+
+        void setTimeOfStroke(float speed = 0) {
+            _timeOfStroke = 0.5 * speed;
+        }
+
+        void setStroke(int stroke) {
+            _stroke = stroke;
+            _updateVibration();
+        }
+
+        void setDepth(int depth) {
+            _depth = depth;
+            _updateVibration();
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            // Use max speed and acceleration for fastest possible vibration
+            _nextMove.speed = _maxSpeed > 0 ? _maxSpeed : int(1.5 * _vibrationAmplitude / _timeOfStroke);
+            _nextMove.acceleration = _maxAcceleration > 0 ? _maxAcceleration : int(3.0 * _nextMove.speed / _timeOfStroke);
+
+            // odd stroke moves to back position
+            if (index % 2) {
+                _nextMove.stroke = _vibrationCenter - _vibrationAmplitude / 2;
+            // even stroke moves to front position
+            } else {
+                _nextMove.stroke = _vibrationCenter + _vibrationAmplitude / 2;
+            }
+
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        int _vibrationAmplitude = 10;
+        int _vibrationCenter = 0;
+
+        void _updateVibration() {
+            // Map sensation to amplitude fraction: 0 = full stroke, ±100 = ~2mm
+            float absSensation = abs(_sensation);
+
+            // Scale: at sensation=0, fraction=1.0 (full stroke)
+            //        at sensation=±100, fraction approaches minimum (2mm worth of steps)
+            float fraction = 1.0 - (absSensation / 100.0) * 0.95;  // range [0.05, 1.0]
+            _vibrationAmplitude = max(int((float)_stroke * fraction), (int)(2.0 * _stepsPerMM));
+
+            // Positive sensation: vibrate near front (depth end)
+            // Negative sensation: vibrate near back (retracted end)
+            if (_sensation >= 0) {
+                // Center at depth, pull back by half amplitude
+                _vibrationCenter = _depth - _vibrationAmplitude / 2;
+            } else {
+                // Center at back of stroke, push forward by half amplitude
+                _vibrationCenter = (_depth - _stroke) + _vibrationAmplitude / 2;
+            }
+
+            // Constrain center so vibration stays within [depth-stroke, depth]
+            int minPos = _depth - _stroke + _vibrationAmplitude / 2;
+            int maxPos = _depth - _vibrationAmplitude / 2;
+            if (minPos > maxPos) {
+                // stroke is smaller than amplitude, just center it
+                _vibrationCenter = _depth - _stroke / 2;
+            } else {
+                if (_vibrationCenter < minPos) _vibrationCenter = minPos;
+                if (_vibrationCenter > maxPos) _vibrationCenter = maxPos;
+            }
+
+#ifdef DEBUG_PATTERN
+            Serial.println("Vibrate: amplitude=" + String(_vibrationAmplitude)
+                         + " center=" + String(_vibrationCenter)
+                         + " sensation=" + String(_sensation));
+#endif
+        }
+};
+
+/**************************************************************************/
+/*!
+  @brief  Jack Hammer pattern. Rapid, hard-hitting strokes that slam to
+  full depth and retract quickly, like a jackhammer. The in-stroke is
+  very fast while the out-stroke is slower, creating an aggressive
+  pounding feel.
+
+  Sensation controls the aggression ratio:
+    -100  = equal speed in/out (smooth)
+      0   = in-stroke 3x faster than out (default hammer)
+    +100  = in-stroke 6x faster than out (maximum impact)
+*/
+/**************************************************************************/
+class JackHammer : public Pattern {
+    public:
+        JackHammer(const char *str) : Pattern(str) {}
+
+        void setSensation(float sensation) {
+            _sensation = sensation;
+            _updateTiming();
+        }
+
+        void setTimeOfStroke(float speed = 0) {
+            _timeOfStroke = speed;
+            _updateTiming();
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            // odd stroke is retracting (out) — slower
+            if (index % 2) {
+                _nextMove.speed = int(1.5 * _stroke / _timeOfOutStroke);
+                _nextMove.acceleration = int(3.0 * float(_nextMove.speed) / _timeOfOutStroke);
+                _nextMove.stroke = _depth - _stroke;
+            // even stroke is slamming in — fast
+            } else {
+                _nextMove.speed = int(1.5 * _stroke / _timeOfInStroke);
+                _nextMove.acceleration = int(6.0 * float(_nextMove.speed) / _timeOfInStroke);
+                _nextMove.stroke = _depth;
+            }
+            _nextMove.skip = false;
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        float _timeOfInStroke = 0.1;
+        float _timeOfOutStroke = 0.5;
+
+        void _updateTiming() {
+            // Map sensation to speed ratio [1, 6] where 0 → 3x
+            float ratio = fscale(0.0, 100.0, 1.0, 6.0, abs(_sensation), 0.0);
+            if (_sensation < 0) {
+                // Negative: closer to equal speed (ratio → 1)
+                ratio = fscale(0.0, 100.0, 3.0, 1.0, abs(_sensation), 0.0);
+            } else {
+                // Positive: more aggressive (ratio 3→6)
+                ratio = fscale(0.0, 100.0, 3.0, 6.0, _sensation, 0.0);
+            }
+            // total time is _timeOfStroke; split between in and out
+            _timeOfInStroke = _timeOfStroke / (1.0 + ratio);
+            _timeOfOutStroke = _timeOfStroke - _timeOfInStroke;
+#ifdef DEBUG_PATTERN
+            Serial.println("JackHammer ratio=" + String(ratio)
+                         + " in=" + String(_timeOfInStroke)
+                         + " out=" + String(_timeOfOutStroke));
+#endif
+        }
+};
+
+/**************************************************************************/
+/*!
+  @brief  Stroke Nibbler pattern. Takes small, rapid "nibbling" bites at
+  different positions along the stroke length. Each nibble is a short
+  back-and-forth motion, and after a set of nibbles the position advances
+  deeper (or retreats), creating a progressive teasing effect.
+
+  Sensation controls nibble size and count:
+    -100  = large nibbles (40% of stroke), 2 per position — aggressive
+      0   = medium nibbles (20% of stroke), 4 per position — balanced
+    +100  = tiny nibbles (5% of stroke), 8 per position — very teasing
+*/
+/**************************************************************************/
+class StrokeNibbler : public Pattern {
+    public:
+        StrokeNibbler(const char *str) : Pattern(str) {}
+
+        void setSensation(float sensation) {
+            _sensation = sensation;
+            _updateNibble();
+        }
+
+        void setTimeOfStroke(float speed = 0) {
+            // Each nibble should be fast; base time is for one nibble cycle
+            _timeOfStroke = speed;
+            _nibbleTime = speed * 0.25;  // each nibble is 1/4 of full stroke time
+        }
+
+        void setStroke(int stroke) {
+            _stroke = stroke;
+            _updateNibble();
+        }
+
+        void setDepth(int depth) {
+            _depth = depth;
+            _updateNibble();
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            // Which nibble position are we at? (cycles through _nibblesPerPos * 2 moves per position)
+            int movesPerPosition = _nibblesPerPos * 2;
+            int totalPositions = max(2, _stroke / max(_nibbleSize, 1));
+            // Ping-pong: advance through positions then reverse
+            int positionCycle = (index / movesPerPosition) % (totalPositions * 2);
+            int positionIndex;
+            if (positionCycle < totalPositions) {
+                positionIndex = positionCycle;  // advancing
+            } else {
+                positionIndex = (totalPositions * 2) - positionCycle - 1;  // retreating
+            }
+
+            // Base position for this nibble cluster
+            int basePos = (_depth - _stroke) + (positionIndex * _stroke / max(totalPositions - 1, 1));
+
+            // Speed and acceleration for fast nibbles
+            _nextMove.speed = int(1.5 * _nibbleSize / _nibbleTime);
+            _nextMove.acceleration = int(3.0 * _nextMove.speed / _nibbleTime);
+
+            // Alternate between base and base + nibbleSize
+            if (index % 2) {
+                _nextMove.stroke = max(basePos, _depth - _stroke);
+            } else {
+                _nextMove.stroke = min(basePos + _nibbleSize, _depth);
+            }
+
+            _nextMove.skip = false;
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        int _nibbleSize = 10;
+        int _nibblesPerPos = 4;
+        float _nibbleTime = 0.25;
+
+        void _updateNibble() {
+            // Map sensation: -100→40% stroke, 0→20%, +100→5%
+            float fraction;
+            if (_sensation <= 0) {
+                fraction = fscale(0.0, 100.0, 0.20, 0.40, abs(_sensation), 0.0);
+            } else {
+                fraction = fscale(0.0, 100.0, 0.20, 0.05, _sensation, 0.0);
+            }
+            _nibbleSize = max(int((float)_stroke * fraction), (int)(2.0 * _stepsPerMM));
+
+            // Map sensation to nibbles per position: -100→2, 0→4, +100→8
+            if (_sensation <= 0) {
+                _nibblesPerPos = (int)fscale(0.0, 100.0, 4.0, 2.0, abs(_sensation), 0.0);
+            } else {
+                _nibblesPerPos = (int)fscale(0.0, 100.0, 4.0, 8.0, _sensation, 0.0);
+            }
+            _nibblesPerPos = max(_nibblesPerPos, 1);
+
+#ifdef DEBUG_PATTERN
+            Serial.println("StrokeNibbler: nibbleSize=" + String(_nibbleSize)
+                         + " nibblesPerPos=" + String(_nibblesPerPos)
+                         + " sensation=" + String(_sensation));
+#endif
+        }
+};
+
+/**************************************************************************/
 /*
   Array holding all different patterns. Please include any custom pattern here.
 */
@@ -645,8 +914,10 @@ static Pattern *patternTable[] = {
   new HalfnHalf("Half'n'Half"),
   new Deeper("Deeper"),
   new StopNGo("Stop'n'Go"),
-  new Insist("Insist")
-  // <-- insert your new pattern class here!
+  new Insist("Insist"),
+  new JackHammer("Jack Hammer"),
+  new StrokeNibbler("Stroke Nibbler"),
+  new Vibrate("Vibrate")
  };
 
 static const unsigned int patternTableSize = sizeof(patternTable) / sizeof(patternTable[0]);
