@@ -15,7 +15,7 @@
 #include <pattern.h>
 
 // Debug Levels
-//#define DEBUG_TALKATIVE             // Show debug messages from the StrokeEngine on Serial
+#define DEBUG_TALKATIVE             // Show debug messages from the StrokeEngine on Serial
 //#define DEBUG_STROKE                // Show debug messaged for each individual stroke on Serial
 #define DEBUG_CLIPPING              // Show debug messages when motions violating the machine 
                                     // physics are commanded
