@@ -902,22 +902,250 @@ class StrokeNibbler : public Pattern {
         }
 };
 
+
 /**************************************************************************/
-/*
-  Array holding all different patterns. Please include any custom pattern here.
+/*!
+  @brief  Struggle: This pattern slows down the end of the stroke. Uses
+  the sensation param to vary how much of the end of the stroke is slowed
+  down. Theoretically 0 sensation would be the entire stroke is slow and
+  +-100 sensation would be none of the stroke is slowed. However, those
+  extremes are unwanted behavior, so it's bounded to a min of 0.5 and a
+  max of 0.9 to keep its behavior inline with expectations.
+
+  Conceptualized with the idea of using knotted toys.
+
+  3-phase cycle:
+    Phase 0 (index % 3 == 0): Full speed retract (out stroke)
+    Phase 1 (index % 3 == 1): Full speed partial in-stroke (up to sensation%)
+    Phase 2 (index % 3 == 2): Slow crawl to complete the in-stroke to depth
+
+  Sensation: Controls what fraction of the in-stroke is at full speed.
+    -100 → 0.9 (90% fast, only the last 10% is slow)
+    0    → 0.5 (50/50 split)
+    +100 → 0.9 (same — uses abs(), so symmetric)
+
+  Original pattern by Serket.
 */
 /**************************************************************************/
-static Pattern *patternTable[] = { 
-  new SimpleStroke("Simple Stroke"),
-  new TeasingPounding("Teasing or Pounding"),
-  new RoboStroke("Robo Stroke"),
-  new HalfnHalf("Half'n'Half"),
-  new Deeper("Deeper"),
-  new StopNGo("Stop'n'Go"),
-  new Insist("Insist"),
-  new JackHammer("Jack Hammer"),
-  new StrokeNibbler("Stroke Nibbler"),
-  new Vibrate("Vibrate")
- };
+class Struggle : public Pattern {
+    public:
+        Struggle(const char *str) : Pattern(str) {}
+
+        void setTimeOfStroke(float speed = 0) {
+            _timeOfStroke = 0.5 * speed;
+        }
+
+        void setSensation(float sensation) {
+            _sensation = ((abs(sensation) / 250.0) + 0.5);
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            _nextMove.speed = int(1.5 * _stroke / _timeOfStroke);
+            _nextMove.acceleration = int(3.0 * _nextMove.speed / _timeOfStroke);
+
+            if (index % 3 == 1) {
+                // Fast partial in-stroke: higher accel, move to sensation% of depth
+                _nextMove.acceleration = int(6.0 * _nextMove.speed / _timeOfStroke);
+                _nextMove.speed = int(1.5 * _stroke / _timeOfStroke);
+                _nextMove.stroke = int((_depth - _stroke) + (_stroke * float(_sensation)));
+            }
+            else if (index % 3 == 2) {
+                // Slow crawl to finish the in-stroke to full depth
+                _nextMove.acceleration = int(3.0 * _nextMove.speed / _timeOfStroke);
+                _nextMove.speed = int(0.5 * _stroke / _timeOfStroke);
+                _nextMove.stroke = _depth;
+            }
+            else {
+                // Full speed retract (out stroke)
+                _nextMove.acceleration = int(3.0 * _nextMove.speed / _timeOfStroke);
+                _nextMove.speed = int(1.5 * _stroke / _timeOfStroke);
+                _nextMove.stroke = _depth - _stroke;
+            }
+
+            _index = index;
+            return _nextMove;
+        }
+};
+
+/**************************************************************************/
+/*!
+  @brief  Knot: A modification of Struggle to add a pause at the end of
+  each in/out stroke and to use sensation to change the speed of the slow
+  portion rather than how much of the stroke is slow.
+
+  5-phase cycle:
+    Phase 0 (index % 5 == 0): Full speed retract (out stroke)
+    Phase 1 (index % 5 == 1): Partial in-stroke at 80% speed to 70% depth
+    Phase 2 (index % 5 == 2): Pause (delay based on speed curve)
+    Phase 3 (index % 5 == 3): Slow crawl to full depth (speed = sensation)
+    Phase 4 (index % 5 == 4): Pause again
+
+  Sensation: Controls the speed of the slow crawl portion.
+    Low values → very slow crawl (more dramatic)
+    High values → faster crawl (subtler effect)
+
+  Speed: The delay equation is: sqrt(350000 * speed + 60000) + 550 ms
+    This creates longer pauses at lower speeds (feels natural).
+
+  Original pattern by Serket (V1), tweaks by Vampix (V2).
+*/
+/**************************************************************************/
+class Knot : public Pattern {
+    public:
+        Knot(const char *str) : Pattern(str) {}
+
+        void setTimeOfStroke(float speed = 0) {
+            _timeOfStroke = 0.5 * speed;
+            _speed = speed;
+        }
+
+        void setSensation(float sensation) {
+            _sensation = float(abs(sensation) / 1000.0) + 0.001;
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            _nextMove.acceleration = int(3.0 * _nextMove.speed / _timeOfStroke);
+
+            // Calculate pause duration from speed using tuned sqrt curve
+            // Visualize in Desmos: Y = sqrt(350000*X + 60000) + 550
+            _delayInMillis = int((sqrt((350000.0 * _speed) + 60000.0)) + 550.0);
+
+            if (_isStillDelayed() == false) {
+                if (index % 5 == 1) {
+                    // Partial in-stroke: 80% speed to 70% of stroke depth
+                    _nextMove.acceleration = int(2.0 * _nextMove.speed / _timeOfStroke);
+                    _nextMove.speed = int(0.8 * _stroke / _timeOfStroke);
+                    _nextMove.stroke = int((_depth - _stroke) + (_stroke * 0.70));
+                }
+                else if (index % 5 == 2) {
+                    // Pause after partial in-stroke
+                    _startDelay();
+                }
+                else if (index % 5 == 3) {
+                    // Slow crawl to full depth — speed controlled by sensation
+                    _nextMove.acceleration = int(2.3 * _nextMove.speed / _timeOfStroke);
+                    _nextMove.speed = int(_sensation * _stroke / _timeOfStroke);
+                    _nextMove.stroke = _depth;
+#ifdef DEBUG_PATTERN
+                    Serial.println("Knot Speed: " + String(_speed));
+                    Serial.println("Knot Delay ms: " + String(_delayInMillis));
+#endif
+                }
+                else if (index % 5 == 4) {
+                    // Pause after completing in-stroke
+                    _startDelay();
+                }
+                else {
+                    // Phase 0: Full speed retract
+                    _nextMove.acceleration = int(2.0 * _nextMove.speed / _timeOfStroke);
+                    _nextMove.speed = int(1.0 * _stroke / _timeOfStroke);
+                    _nextMove.stroke = _depth - _stroke;
+                }
+                _nextMove.skip = false;
+            }
+            else {
+                _nextMove.skip = true;
+            }
+
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        float _speed;
+};
+
+/**************************************************************************/
+/*!
+  @brief  Slammin: Slam the business end in with extra aggression and
+  pause at full depth to make it feel more impactful and dramatic.
+
+  Depth & Stroke characteristics match Simple Stroke and should behave
+  the same way.
+
+  2-phase cycle with delay:
+    Odd index:  Slow out-stroke (speed controlled by sensation)
+    Even index: Fast aggressive in-stroke (1.5x speed) + pause at depth
+
+  Sensation: Controls the speed of the out-stroke.
+    Mapped from the raw sensation value to a [0.5, ~0.89] multiplier.
+    Default behavior is roughly halfway between center and max sensation.
+    Symmetric (abs value used) — same effect whether + or -.
+
+  Speed: Pause duration uses: sqrt(350000 * speed + 60000) + 125 ms
+    Shorter pauses than Knot pattern (125 vs 550 base offset).
+
+  Made with longer toys in mind.
+  Original pattern by Vampix.
+*/
+/**************************************************************************/
+class Slammin : public Pattern {
+    public:
+        Slammin(const char *str) : Pattern(str) {}
+
+        void setTimeOfStroke(float speed = 0) {
+            _timeOfStroke = 0.5 * speed;
+            _speed = speed;
+        }
+
+        void setSensation(float sensation = 40) {
+            _sensation = float((abs(sensation) / 255.0) + 0.5);
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            // Default acceleration
+            _nextMove.acceleration = int(3.0 * _nextMove.speed / _timeOfStroke);
+
+            // Calculate pause: shorter base offset than Knot (125 vs 550)
+            _delayInMillis = int((sqrt((350000.0 * _speed) + 60000.0)) + 125.0);
+
+            if (_isStillDelayed() == false) {
+                // Odd: slower out-stroke (speed controlled by sensation)
+                if (index % 2) {
+                    _nextMove.speed = int(_sensation * _stroke / _timeOfStroke);
+                    _nextMove.acceleration = int(1.1 * _nextMove.speed / _timeOfStroke);
+                    _nextMove.stroke = _depth - _stroke;
+                }
+                // Even: fast aggressive in-stroke + start pause at depth
+                else {
+                    _nextMove.speed = int(1.5 * _stroke / _timeOfStroke);
+                    _nextMove.acceleration = int(2.8 * _nextMove.speed / _timeOfStroke);
+                    _nextMove.stroke = _depth;
+                    _startDelay();
+                }
+                _nextMove.skip = false;
+            }
+            else {
+                _nextMove.skip = true;
+            }
+
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        float _speed;
+};
+
+
+
+/**************************************************************************
+  Array holding all different patterns. Please include any custom pattern here.
+**************************************************************************/
+static Pattern *patternTable[] = {
+  new SimpleStroke("Simple Stroke"),       // 0
+  new TeasingPounding("Teasing or Pounding"), // 1
+  new RoboStroke("Robo Stroke"),           // 2
+  new HalfnHalf("Half'n'Half"),            // 3
+  new Deeper("Deeper"),                    // 4
+  new StopNGo("Stop'n'Go"),               // 5
+  new Insist("Insist"),                    // 6
+  new JackHammer("Jack Hammer"),           // 7
+  new StrokeNibbler("Stroke Nibbler"),     // 8
+  new Vibrate("Vibrate"),                  // 9
+  new Struggle("Struggle"),               // 10  (Serket)
+  new Knot("Knot"),                        // 11  (Serket/Vampix)
+  new Slammin("Slammin"),                  // 12  (Vampix)
+};
 
 static const unsigned int patternTableSize = sizeof(patternTable) / sizeof(patternTable[0]);
