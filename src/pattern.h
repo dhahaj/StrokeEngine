@@ -494,12 +494,18 @@ class StopNGo : public Pattern {
             // adds a delay between each stroke
             if (_isStillDelayed() == false) {
 
-                // odd stroke is moving out    
+                // odd stroke is moving out
                 if (index % 2) {
                     _nextMove.stroke = _depth - _stroke;
+                    // Increment stroke index by one
+                    _strokeIndex++;
+
+                // even stroke is moving in
+                } else {
+                    _nextMove.stroke = _depth;
 
                     if (_strokeIndex >= _strokeSeriesIndex) {
-                        // Reset stroke index to 1
+                        // Reset stroke index to 0
                         _strokeIndex = 0;
 
                         // change count direction once we reached the maximum number of strokes
@@ -519,16 +525,9 @@ class StopNGo : public Pattern {
                             _strokeSeriesIndex--;
                         }
 
-                        // start delay after having moved out
+                        // start delay after having moved in to max position
                         _startDelay();
                     }
-                    
-
-                // even stroke is moving in
-                } else {
-                    _nextMove.stroke = _depth;
-                    // Increment stroke index by one
-                    _strokeIndex++;
                 }
                 _nextMove.skip = false;
             } else {
