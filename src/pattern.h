@@ -1127,6 +1127,52 @@ class Slammin : public Pattern {
 };
 
 
+class YoYo : public Pattern {
+    public:
+        YoYo(const char *str) : Pattern(str) {}
+
+        void setSensation(float sensation) { 
+            _sensation = sensation;
+            // Map sensation to time split: -100→90% out, 0→50/50, +100→90% in
+            _timeOfOutStroke = _timeOfStroke * fscale(-100.0, 100.0, 0.9, 0.1, sensation, 0.0);
+            _timeOfInStroke = _timeOfStroke - _timeOfOutStroke;
+            }
+
+        void setTimeOfStroke(float speed = 0) { 
+             // In & Out have same time, so we need to divide by 2
+            _timeOfStroke = 0.5 * speed;
+            // Update split based on new time
+            setSensation(_sensation);
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            int stroke = _stroke;
+            // odd stroke is moving out
+            if (index % 2) {
+                // maximum speed of the trapezoidal motion
+                _nextMove.speed = int(1.5 * stroke/_timeOfOutStroke);
+                // acceleration to meet the profile
+                _nextMove.acceleration = int(3.0 * float(_nextMove.speed)/_timeOfOutStroke);
+                _nextMove.stroke = _depth - _stroke;
+            // even stroke is moving in
+             } else {
+                // maximum speed of the trapezoidal motion
+                _nextMove.speed = int(1.5 * stroke/_timeOfInStroke);
+                // acceleration to meet the profile
+                _nextMove.acceleration = int(3.0 * float(_nextMove.speed)/_timeOfInStroke);
+                _nextMove.stroke = _depth;
+                }
+                _nextMove.skip = false;
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        float _timeOfStroke = 1.0;
+        float _timeOfOutStroke;
+        float _timeOfInStroke;
+};
+
 
 /**************************************************************************
   Array holding all different patterns. Please include any custom pattern here.
@@ -1137,14 +1183,15 @@ static Pattern *patternTable[] = {
   new RoboStroke("Robo Stroke"),           // 2
   new HalfnHalf("Half'n'Half"),            // 3
   new Deeper("Deeper"),                    // 4
-  new StopNGo("Stop'n'Go"),               // 5
+  new StopNGo("Stop'n'Go"),                // 5
   new Insist("Insist"),                    // 6
   new JackHammer("Jack Hammer"),           // 7
   new StrokeNibbler("Stroke Nibbler"),     // 8
   new Vibrate("Vibrate"),                  // 9
-  new Struggle("Struggle"),               // 10  (Serket)
+  new Struggle("Struggle"),                // 10  (Serket)
   new Knot("Knot"),                        // 11  (Serket/Vampix)
   new Slammin("Slammin"),                  // 12  (Vampix)
+  new YoYo("YoYo"),                        // 13
 };
 
 static const unsigned int patternTableSize = sizeof(patternTable) / sizeof(patternTable[0]);
