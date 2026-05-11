@@ -1174,6 +1174,95 @@ class YoYo : public Pattern {
 };
 
 
+/**************************************************************************/
+/*!
+  @brief  Wave on Wave: short strokes superimposed on a slow sinusoidal
+  traversal across the full stroke length. The short oscillation acts as
+  the carrier "felt" sensation while the slow wave drifts the center
+  position from the back end to the front end and back again.
+
+  Sensation controls the short stroke amplitude:
+    -100 → ~5% of stroke (very short, vibration-like)
+       0 → ~25% of stroke (balanced)
+    +100 → ~60% of stroke (long short-strokes)
+
+  Speed (timeOfStroke) controls the short stroke rate; the slow carrier
+  always takes _shortStrokesPerCarrier full short strokes to complete one
+  cycle, so it gets slower as you slow the speed knob, in the same ratio.
+*/
+/**************************************************************************/
+class WaveOnWave : public Pattern {
+    public:
+        WaveOnWave(const char *str) : Pattern(str) {}
+
+        void setSensation(float sensation) {
+            _sensation = sensation;
+            _updateAmplitude();
+        }
+
+        void setStroke(int stroke) {
+            _stroke = stroke;
+            _updateAmplitude();
+        }
+
+        void setTimeOfStroke(float speed = 0) {
+            // Speed knob sets time of one full short stroke (in + out);
+            // halve it because each nextTarget() is one half short-stroke.
+            _timeOfStroke = 0.5 * speed;
+        }
+
+        motionParameter nextTarget(unsigned int index) {
+            // Each index step is one half of a short stroke. After
+            // 2 * _shortStrokesPerCarrier steps the slow wave completes
+            // one full cycle.
+            float carrierPhase = (float)index * PI / (float)_shortStrokesPerCarrier;
+
+            // Range available to the slow carrier center, keeping the
+            // short stroke fully inside [depth - stroke, depth].
+            int minCenter = (_depth - _stroke) + _shortAmplitude / 2;
+            int maxCenter = _depth - _shortAmplitude / 2;
+            int midCenter = (minCenter + maxCenter) / 2;
+            int halfRange = (maxCenter - minCenter) / 2;
+            if (halfRange < 0) halfRange = 0;
+
+            int center = midCenter + (int)((float)halfRange * sinf(carrierPhase));
+
+            // Alternate between the front and back of the short stroke
+            if (index % 2) {
+                _nextMove.stroke = center - _shortAmplitude / 2;
+            } else {
+                _nextMove.stroke = center + _shortAmplitude / 2;
+            }
+
+            // Trapezoidal profile for one short half-stroke
+            _nextMove.speed = int(1.5 * (float)_shortAmplitude / _timeOfStroke);
+            _nextMove.acceleration = int(3.0 * (float)_nextMove.speed / _timeOfStroke);
+            _nextMove.skip = false;
+
+            _index = index;
+            return _nextMove;
+        }
+
+    protected:
+        int _shortAmplitude = 10;
+        int _shortStrokesPerCarrier = 20;  // short strokes per slow-wave cycle
+
+        void _updateAmplitude() {
+            float fraction;
+            if (_sensation >= 0) {
+                fraction = fscale(0.0, 100.0, 0.25, 0.60, _sensation, 0.0);
+            } else {
+                fraction = fscale(0.0, 100.0, 0.25, 0.05, -_sensation, 0.0);
+            }
+            _shortAmplitude = max(int((float)_stroke * fraction), (int)(2.0 * _stepsPerMM));
+#ifdef DEBUG_PATTERN
+            Serial.println("WaveOnWave: shortAmplitude=" + String(_shortAmplitude)
+                         + " sensation=" + String(_sensation));
+#endif
+        }
+};
+
+
 /**************************************************************************
   Array holding all different patterns. Please include any custom pattern here.
 **************************************************************************/
@@ -1192,6 +1281,7 @@ static Pattern *patternTable[] = {
   new Knot("Knot"),                        // 11  (Serket/Vampix)
   new Slammin("Slammin"),                  // 12  (Vampix)
   new YoYo("YoYo"),                        // 13
+  new WaveOnWave("Wave on Wave"),          // 14
 };
 
 static const unsigned int patternTableSize = sizeof(patternTable) / sizeof(patternTable[0]);
